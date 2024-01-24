@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +22,9 @@ const (
 	cacheExpiration = 12 * time.Hour
 	unit            = 1024
 )
+
+//go:embed index.html
+var home string
 
 type settings struct {
 	accessKey       string
@@ -54,14 +61,14 @@ func newSettings() (settings, error) {
 
 }
 
-type file struct {
-	url          string
-	name         string
-	size         int64
-	lastModified time.Time
+type File struct {
+	URL            string
+	size           int64
+	name           string
+	lastModifiedAt time.Time
 }
 
-func (f *file) humanReadableSize() string {
+func (f *File) HumanReadableSize() string {
 	if f.size < unit {
 		return fmt.Sprintf("%d B", f.size)
 	}
@@ -73,18 +80,55 @@ func (f *file) humanReadableSize() string {
 	return fmt.Sprintf("%.1f %cB", float64(f.size)/float64(div), "KMGTPE"[exp])
 }
 
-type cache struct {
-	settings  settings
-	createdAt time.Time
-	data      []file
+func (f *File) ShortName() string {
+	p := strings.Split(f.name, "/")
+	return p[len(p)-1]
 }
 
-func (c *cache) isExpired() bool {
+func (f *File) group() string {
+	p := strings.Split(f.name, "/")
+	if len(p) == 1 {
+		return "Binários"
+	}
+	return p[0]
+}
+
+type Group struct {
+	Name  string
+	Files []File
+}
+
+func newGroups(fs []File) []Group {
+	var m = make(map[string][]File)
+	for _, f := range fs {
+		n := f.group()
+		m[n] = append(m[n], f)
+	}
+	ks := []string{}
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	var gs []Group
+	for _, k := range ks {
+		gs = append(gs, Group{k, m[k]})
+	}
+	return gs
+}
+
+type Cache struct {
+	settings  settings
+	createdAt time.Time
+	template  *template.Template
+	HTML      []byte
+}
+
+func (c *Cache) isExpired() bool {
 	return time.Since(c.createdAt) > cacheExpiration
 }
 
-func (c *cache) refresh() error {
-	var fs []file
+func (c *Cache) refresh() error {
+	var fs []File
 	sess, err := session.NewSession(&aws.Config{
 		Region:           aws.String(c.settings.region),
 		Endpoint:         aws.String(c.settings.endpointURL),
@@ -100,19 +144,19 @@ func (c *cache) refresh() error {
 	}
 
 	var token *string
-	loadPage := func(t *string) ([]file, *string, error) {
-		var fs []file
+	loadPage := func(t *string) ([]File, *string, error) {
+		var fs []File
 		sdk := s3.New(sess)
 		r, err := sdk.ListObjectsV2(&s3.ListObjectsV2Input{
 			Bucket:            aws.String(c.settings.bucket),
 			ContinuationToken: t,
 		})
 		if err != nil {
-			return []file{}, nil, err
+			return []File{}, nil, err
 		}
 		for _, obj := range r.Contents {
 			url := fmt.Sprintf("%s%s", c.settings.publicDomain, *obj.Key)
-			fs = append(fs, file{url, *obj.Key, *obj.Size, *obj.LastModified})
+			fs = append(fs, File{url, *obj.Size, *obj.Key, *obj.LastModified})
 		}
 		if *r.IsTruncated {
 			return fs, r.NextContinuationToken, nil
@@ -130,20 +174,27 @@ func (c *cache) refresh() error {
 		}
 		token = nxt
 	}
-	c.data = fs
+
+	var b bytes.Buffer
+	c.template.Execute(&b, newGroups(fs))
+	c.HTML = b.Bytes()
 	c.createdAt = time.Now()
 	return nil
 }
 
-func newCache(s settings) (*cache, error) {
-	c := cache{s, time.Now(), []file{}}
+func newCache(s settings) (*Cache, error) {
+	t, err := template.New("home").Parse(home)
+	if err != nil {
+		return nil, err
+	}
+	c := Cache{s, time.Now(), t, []byte{}}
 	if err := c.refresh(); err != nil {
-		return &c, err
+		return nil, err
 	}
 	return &c, nil
 }
 
-func startServer(c *cache, p string) {
+func startServer(c *Cache, p string) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if c.isExpired() {
 			if err := c.refresh(); err != nil {
@@ -152,20 +203,7 @@ func startServer(c *cache, p string) {
 				return
 			}
 		}
-
-		fmt.Fprintf(w, "<h1>Minha Receita Mirror</h1>")
-		fmt.Fprintf(w, "<ul>")
-		for _, f := range c.data {
-			fmt.Fprintf(
-				w,
-				"<li><a href=\"%s\">%s</a> (%s) %s</li>",
-				f.url,
-				f.name,
-				f.humanReadableSize(),
-				f.lastModified.Format("2006-01-02 15:04:05"),
-			)
-		}
-		fmt.Fprintf(w, "</ul>")
+		w.Write(c.HTML)
 	})
 
 	p = fmt.Sprintf(":%s", p)
@@ -182,7 +220,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	p := os.Getenv("PORT")
 	if p == "" {
 		p = "8000"
