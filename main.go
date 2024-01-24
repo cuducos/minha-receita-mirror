@@ -99,20 +99,36 @@ func (c *cache) refresh() error {
 		return err
 	}
 
-	sdk := s3.New(sess)
-	r, err := sdk.ListObjectsV2(&s3.ListObjectsV2Input{
-		Bucket: aws.String(c.settings.bucket),
-	})
-	if err != nil {
-		return err
+	var token *string
+	loadPage := func(t *string) ([]file, *string, error) {
+		var fs []file
+		sdk := s3.New(sess)
+		r, err := sdk.ListObjectsV2(&s3.ListObjectsV2Input{
+			Bucket:            aws.String(c.settings.bucket),
+			ContinuationToken: t,
+		})
+		if err != nil {
+			return []file{}, nil, err
+		}
+		for _, obj := range r.Contents {
+			url := fmt.Sprintf("%s%s", c.settings.publicDomain, *obj.Key)
+			fs = append(fs, file{url, *obj.Key, *obj.Size, *obj.LastModified})
+		}
+		if *r.IsTruncated {
+			return fs, r.NextContinuationToken, nil
+		}
+		return fs, nil, nil
 	}
-
-	for _, obj := range r.Contents {
-		url := fmt.Sprintf("%s%s", c.settings.publicDomain, *obj.Key)
-		fs = append(fs, file{url, *obj.Key, *obj.Size, *obj.LastModified})
-	}
-	if err != nil {
-		return err
+	for {
+		r, nxt, err := loadPage(token)
+		if err != nil {
+			return err
+		}
+		fs = append(fs, r...)
+		if nxt == nil {
+			break
+		}
+		token = nxt
 	}
 	c.data = fs
 	c.createdAt = time.Now()
