@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -62,22 +63,22 @@ func newSettings() (settings, error) {
 }
 
 type File struct {
-	URL            string
-	size           int64
+	URL            string `json:"url"`
+	Size           int64  `json:"size"`
 	name           string
 	lastModifiedAt time.Time
 }
 
 func (f *File) HumanReadableSize() string {
-	if f.size < unit {
-		return fmt.Sprintf("%d B", f.size)
+	if f.Size < unit {
+		return fmt.Sprintf("%d B", f.Size)
 	}
 	div, exp := int64(unit), 0
-	for n := f.size / unit; n >= unit; n /= unit {
+	for n := f.Size / unit; n >= unit; n /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(f.size)/float64(div), "KMGTPE"[exp])
+	return fmt.Sprintf("%.1f %cB", float64(f.Size)/float64(div), "KMGTPE"[exp])
 }
 
 func (f *File) ShortName() string {
@@ -94,8 +95,8 @@ func (f *File) group() string {
 }
 
 type Group struct {
-	Name  string
-	Files []File
+	Name  string `json:"name"`
+	Files []File `json:"urls"`
 }
 
 func newGroups(fs []File) []Group {
@@ -121,10 +122,15 @@ type Cache struct {
 	createdAt time.Time
 	template  *template.Template
 	HTML      []byte
+	JSON      []byte
 }
 
 func (c *Cache) isExpired() bool {
 	return time.Since(c.createdAt) > cacheExpiration
+}
+
+type JSONResponse struct {
+	Data []Group `json:"data"`
 }
 
 func (c *Cache) refresh() error {
@@ -175,9 +181,17 @@ func (c *Cache) refresh() error {
 		token = nxt
 	}
 
-	var b bytes.Buffer
-	c.template.Execute(&b, newGroups(fs))
-	c.HTML = b.Bytes()
+	data := newGroups(fs)
+	var h bytes.Buffer
+	c.template.Execute(&h, data)
+	c.HTML = h.Bytes()
+
+	var j bytes.Buffer
+	if err := json.NewEncoder(&j).Encode(JSONResponse{data}); err != nil {
+		return err
+	}
+	c.JSON = j.Bytes()
+
 	c.createdAt = time.Now()
 	return nil
 }
@@ -187,7 +201,7 @@ func newCache(s settings) (*Cache, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := Cache{s, time.Now(), t, []byte{}}
+	c := Cache{s, time.Now(), t, []byte{}, []byte{}}
 	if err := c.refresh(); err != nil {
 		return nil, err
 	}
@@ -203,7 +217,12 @@ func startServer(c *Cache, p string) {
 				return
 			}
 		}
-		w.Write(c.HTML)
+
+		if r.Header.Get("Accept") == "application/json" {
+			w.Write(c.JSON)
+		} else {
+			w.Write(c.HTML)
+		}
 	})
 
 	p = fmt.Sprintf(":%s", p)
