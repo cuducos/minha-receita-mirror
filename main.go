@@ -109,7 +109,7 @@ func newGroups(fs []File) []Group {
 	for k := range m {
 		ks = append(ks, k)
 	}
-	sort.Strings(ks)
+	sort.Sort(sort.Reverse(sort.StringSlice(ks)))
 	var gs []Group
 	for _, k := range ks {
 		gs = append(gs, Group{k, m[k]})
