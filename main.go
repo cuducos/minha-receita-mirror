@@ -47,8 +47,8 @@ func newSettings() (settings, error) {
 	}
 
 	s := settings{
-		accessKey:       load("ACCESS_KEY_ID"),
-		secretAccessKey: load("SECRET_ACCESS_KEY"),
+		accessKey:       load("AWS_ACCESS_KEY_ID"),
+		secretAccessKey: load("AWS_SECRET_ACCESS_KEY"),
 		region:          load("AWS_DEFAULT_REGION"),
 		endpointURL:     load("ENDPOINT_URL"),
 		bucket:          load("BUCKET"),
