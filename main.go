@@ -224,6 +224,13 @@ func startServer(c *Cache, p string) {
 			w.Write(c.HTML)
 		}
 	})
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead && r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 
 	p = fmt.Sprintf(":%s", p)
 	log.Output(1, fmt.Sprintf("Server listening on http://0.0.0.0%s", p))
